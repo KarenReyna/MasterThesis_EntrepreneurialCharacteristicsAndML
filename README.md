@@ -1,5 +1,6 @@
 # Advanced Statistical Approaches to Analyse Entrepreneurial Characteristics: A Machine Learning Approach
-Master Thesis
+
+[![DOI](https://zenodo.org/badge/313338508.svg)](https://zenodo.org/badge/latestdoi/313338508)
 
 This is a repository for my master thesis for the [Master of Science in Management](https://www.wi.tum.de/programs/master-in-management/). My thesis was supvervised by M.Sc. Leidy Cubillos from the Chair of Research and Science Management at the Technical University of Munich.
 
