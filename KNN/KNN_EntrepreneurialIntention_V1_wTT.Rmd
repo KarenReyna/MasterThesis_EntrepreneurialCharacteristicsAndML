@@ -1,0 +1,660 @@
+---
+title: "K-Nearest Neighbors predicting Entrepreneurial Intention"
+author: "Ana Karen Reyna Rivas"
+date: "2020"
+output:
+  html_notebook:
+    toc: true
+    includes:
+      after_body: ../Footer.html
+bibliography: ../Bibliography.bib
+---
+
+```{r}
+# Copyright (c) 2020, Ana Karen Reyna Rivas
+# All rights reserved.
+
+# This source code is licensed under the BSD-style license found in the LICENSE file in the root directory of this source tree.
+```
+
+```{r setup, include=FALSE}
+ knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+# Step 1: Import Libraries
+The libraries I used for the whole implementation are imported in this section. The first step was to install the libraries with the `r  colFmt('install.packages()', 'blue')` function. Then, import them with `r  colFmt('library()', 'blue')` function.
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra) # Construct Complex Table
+library(randomForest)
+library(caret)
+library(e1071) # R ML Library
+library(writexl) # Write to Excel
+```
+
+# Step 2: Import Data and Functions
+The data gathered during the experiment and the reusable code are imported here. The `r  colFmt('load()', 'blue')` function was used to import the data and `r  colFmt('source()', 'blue')` for the code. Additionally, I cleaned the working environment to delete any other existing variables.
+```{r}
+# Clean Workspace Variables
+rm(list = ls())
+
+# Data - TODO
+load("<RDataDirectoryFile>")
+
+# Functions
+source('../FunctionsV4.R')
+source('KNN_Functions_wTT.R')
+```
+
+# Step 3: Define Global Variables
+This section defines all the global variables used across the R Notebook. Variables like size of the train/test split, seed, train control, and features selected for the model are declared here. In case new settings and variables want to be explored, only this section needs to be changed.
+```{r}
+# Size and Seed
+size = 0.50
+seed = 6
+
+# Data Frame to Save Table's Values
+dataframePreliminarValues <- data.frame()
+dataframeTestValues <- data.frame()
+
+# Control K-Fold CV
+trControl <- trainControl(method = "cv", number = 10, search = "grid")
+
+######### VARIABLES FOR ALL VERSIONS #########
+# Class
+class <- c('SplitEntrepreneurIntention')
+# Variables
+variables <- c('SumNarcissisticPI', 'SumEthicsPositionsRelativismQs', 'MeanOpenness', 'Typerulebreaking')
+# All Variables
+all_variables <- c(variables, class)
+
+######### VARIABLES FOR VERSION 1 #########
+# Class
+class_v1 <- c('SplitEntrepreneurIntention')
+# Variables
+variables_v1 <- c('Narcissism', 'Relativism', 'Openness', 'Typerulebreaking')
+# All Variables
+all_variables_v1 <- c(variables_v1, class_v1)
+```
+
+# Step 4: Filter Data
+The data has three types of rule breakers: the Unconditional Rule Followers (URF), the Conditional Rule Breakers (CRB) and the Unconditional Rule Breakers (URB). For this research, only the URF and CRB will be studied.
+
+In the following lines of code, I selected the observations with a `r  colFmt('Typerulebreaking', 'blue')` different than "3", that means different than "URB" type.
+
+Typerulebreaking Factors are:
+
+* 1: URF
+* 2: CRB
+* 3: URB
+
+I also mutated to the dataframe the `r  colFmt('SplitEntrepreneurIntention', 'blue')` variable as follows:
+
+* If the `r  colFmt('MeanEntrepreneurIntention', 'blue')` value of the instance is lower than the mean of the whole dataset, then "SplitEntrepreneurIntention = 1" (meaning low \gls{ei}).
+* If the `r  colFmt('MeanEntrepreneurIntention', 'blue')` value of the instance is higher or equal than the mean of the whole dataset, then "SplitEntrepreneurIntention = 2" (meaning high \gls{ei}).
+* Else "SplitEntrepreneurIntention = 3".
+```{r}
+# Filter and Mutate EI Variable
+df_QueParadigmRuleEntIntention <- df_QueParadigm %>%
+  filter(Typerulebreaking != 3) %>%
+  filter(exp_part == 3) %>%
+  mutate(SplitEntrepreneurIntention = dplyr::if_else((MeanEntrepreneurIntention < mean(df_Que_RuleBreakers$MeanEntrepreneurIntention)), 1, dplyr::if_else((MeanEntrepreneurIntention >= mean(df_Que_RuleBreakers$MeanEntrepreneurIntention)), 2, 3)))
+# 1 = low
+# 2 = high
+
+# Print First Rows of Data Frame
+head(df_QueParadigmRuleEntIntention)
+```
+
+# Step 5: Shuffle and Clean Data
+It is important to shuffle the data, because then the algorithm will learn from the features of all observations [@Guru99DT] and not only for certain type of rule breaking.
+
+Data clean up to be done as follows [@Guru99DT]:
+
+* Drop variables.
+* Create factor variables for "Typerulebreaking".
+* Drop NA: in case there are some observations with NA's variables.
+```{r}
+# Shuffle Data
+df_final <- shuffle_data(df_QueParadigmRuleEntIntention, seed)
+
+# Clean Data
+clean_df_final <- data.frame(clean_data(df_final, all_variables))
+```
+
+# Step 6: Explore and Prepare Data
+I will explore the data and see whether I can shine some light on the relationships. In doing so, I will prepare the data for use with the k-NN learning method [@Lantz2015].
+```{r}
+# Copy variable
+str(clean_df_final)
+```
+
+The variables `r colFmt("Typerulebreaking" ,'blue')` and `r colFmt("SplitEntrepreneurIntention" ,'blue')` are of type factor with two levels and the other features are all numeric. I will take a closer look at the numeric features:
+```{r}
+summary(clean_df_final[c("Narcissism", "Relativism", "Openness")])
+```
+
+Looking at the features side-by-side, I find a problematic about the values. "The distance calculation for k-NN is heavily dependent upon the measurement scale of the input features" [@Lantz2015]. Since "Narcissism" ranges from 13 to 25, "Relativism" ranges from 23 to 90, and "Openness" ranges from 1 to 5; the impact of "Relativism" is going to be much larger than the "Narcissism" and "Openness" in the distance calculation. "This could potentially cause problems for our classifier, so let's apply normalization to rescale the features to a standard range of values" [@Lantz2015].
+
+## Transformation (Normalizing Numeric Data)
+I will create a `r colFmt("normalize()" ,'blue')` function in R to normalize these features. The function will take a vector "x" of numeric values, and for each value in "x", it substracts the minimum value in "x" and divides by the range of values in "x". Finally, the resulting vector is returned [@Lantz2015]. The code is as follows:
+```{r}
+# Normalize Function
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+```
+
+I can now apply the `r colFmt("normalize()" ,'blue')` function to the numeric features in my data frame. I will use R's `r colFmt("lapply()" ,'blue')` function to automate the process.
+
+`r colFmt("lapply()" ,'blue')` function "takes a list and applies a specified function to each list element" [@Lantz2015]. I can apply `r colFmt("lapply()" ,'blue')` to apply `r colFmt("normalize()" ,'blue')` to each feature in the data frame, because the data frame is a list of equal length vectors. Finally, I will convert the list returned by `r colFmt("lapply()" ,'blue')` to a data frame. The code is as follows:
+```{r}
+clean_df_final_n <- data.frame(lapply(clean_df_final%>%
+  dplyr::select(-c("Typerulebreaking", "SplitEntrepreneurIntention")), normalize), clean_df_final%>%
+  dplyr::select(c("Typerulebreaking", "SplitEntrepreneurIntention")))
+clean_df_final_n
+```
+
+To confirm that the transformation was applied correctly, I will look at one variables's summary statistics:
+```{r}
+summary(clean_df_final_n$Relativism)
+```
+
+As expected, the `r colFmt("Relativism" ,'blue')` variable, which originally ranged from 23 to 90, now ranges from 0 to 1.
+
+# Step 7: Create Data Samples
+The data samples are done using stratified sampling. Its goal is to have control over the number of "Typerulebreaking" sampled from each type [@DataCampStratifiedSample].
+
+By using stratified sample, I will now have control over how many "Typerulebreaking" from each type (URF, CRB) got sampled. I use prop.table() combined with table() to verify if the randomization process is correct [@Guru99DT].
+```{r}
+######### URF DATA #########
+df_URF <- clean_df_final_n %>%
+  dplyr::filter(Typerulebreaking == 'URF')
+dim(df_URF)
+
+# Stratified Sample URF
+data_stratified_sample_URF <- stratified_sample_TT(df_URF, class, size, seed)
+data_train_URF <- data_stratified_sample_URF$data_train
+data_test_URF <- data_stratified_sample_URF$data_test
+
+dim(data_train_URF)
+dim(data_test_URF)
+
+# SplitEntrepreneurIntention is equally divided in each set
+prop.table(table(data_train_URF$SplitEntrepreneurIntention))
+prop.table(table(data_test_URF$SplitEntrepreneurIntention))
+
+######### CRB DATA #########
+df_CRB <- clean_df_final_n %>%
+  dplyr::filter(Typerulebreaking == 'CRB')
+dim(df_CRB)
+
+# Stratified Sample CRB
+data_stratified_sample_CRB <- stratified_sample_TT(df_CRB, class, size, seed)
+data_train_CRB <- data_stratified_sample_CRB$data_train
+data_test_CRB <- data_stratified_sample_CRB$data_test
+
+dim(data_train_CRB)
+dim(data_test_CRB)
+
+# SplitEntrepreneurIntention is equally divided in each set
+prop.table(table(data_train_CRB$SplitEntrepreneurIntention))
+prop.table(table(data_test_CRB$SplitEntrepreneurIntention))
+```
+
+# Version 1
+Formula = SplitEntrepreneurIntention = Narcissism + Relativism + Openness + Typerulebreaking
+
+## URF
+### Step 8: Select Sample Variables and Get K Value
+```{r}
+# Data Train URF
+data_train_v1_URF <- data_train_URF %>%
+  dplyr::select(c(all_variables_v1))
+
+# Data Test URF
+data_test_v1_URF <- data_test_URF %>%
+  dplyr::select(c(all_variables_v1))
+
+dim(data_train_v1_URF)
+dim(data_test_v1_URF)
+
+# Get Data Train Size
+data_train_v1_URF_size <- nrow(data_train_v1_URF)
+# Get K
+k_v1_URF <- floor(sqrt(data_train_v1_URF_size))
+if((k_v1_URF %% 2) == 0){
+  k_v1_URF <- k_v1_URF - 1
+}
+```
+
+Use function prop.table() combined with table() to verify if the randomization process is correct.
+```{r}
+prop.table(table(data_train_v1_URF$SplitEntrepreneurIntention))
+prop.table(table(data_test_v1_URF$SplitEntrepreneurIntention))
+```
+In both dataset, the amount of low and high EI is the same.
+
+### Step 9: Model 1: Default Setting
+As my training data includes `r colFmt(data_train_v1_URF_size ,'blue')` instances, I might try `r colFmt("k = " ,'blue')` `r colFmt(k_v1_URF ,'blue')`, an odd number roughly equal to the square root of `r colFmt(data_train_v1_URF_size ,'blue')`. "With a two-category outcome, using an odd number eliminates the chance of ending with a tie vote" [@Lantz2015].
+```{r}
+# Get Model 1
+model1_v1_URF <- get_model1_knn_TT('1.1 - URF', seed, data_train_v1_URF, trControl)
+fit_m1_v1_URF <- model1_v1_URF$fit
+
+# Evaluation Model Measures
+accuracy_model1_v1_URF <- model1_v1_URF$accuracyTest
+kappa_model1_v1_URF <- model1_v1_URF$kappaTest
+k_model1_v1_URF <- model1_v1_URF$bestK
+```
+The final value used for the model was k = `r  k_model1_v1_URF` with an accuracy = `r  accuracy_model1_v1_URF`% and a kappa = `r  kappa_model1_v1_URF`.
+
+### Step 10: Improve Model Performance
+@Lantz2015 proposes two simple variations to improve the model: rescaling the numeric features and try several different values for *k*.
+
+#### Model 2: Transformation (z-score standardization)
+@Lantz2015 says that "normalization is traditionally used for k-NN clasification", but "it may not always be the most appropiate way to rescale features". Z-score standardized values "have no predefined minimum and maximum, extreme values are not compressed towards the center" [@Lantz2015]. It might "be reasonable to allow the outliers to be weighted more heavily in the distance calculation" [@Lantz2015]. I will see whether z-score standardization can improve my predictive accuracy.
+
+I will use the R's built-in `r colFmt("scale()" ,'blue')` function. It rescales values using the z-score standardization and it "offers the additional benefit that it can be applied directly to a data frame, so we can avoid the use of the `r colFmt("lapply()" ,'blue')` function" [@Lantz2015]. To create a z-score standardized version of the `r colFmt("clean_df_final" ,'blue')` data, I use the following command:
+```{r}
+clean_df_final_z <- data.frame(scale(clean_df_final%>%
+  dplyr::select(-c("Typerulebreaking", "SplitEntrepreneurIntention"))),
+  clean_df_final%>%
+  dplyr::select(c("Typerulebreaking", "SplitEntrepreneurIntention")))
+
+clean_df_final_z
+
+clean_df_final_z2 <- data.frame(scale(clean_df_final%>%
+  dplyr::select(-c("Typerulebreaking", "SplitEntrepreneurIntention"))),
+  clean_df_final%>%
+  dplyr::select(c("Typerulebreaking", "SplitEntrepreneurIntention")))
+
+clean_df_final_z2
+```
+
+This command rescales all the features, with the exception of `r colFmt("Typerulebreaking" ,'blue')` and `r colFmt("SplitEntrepreneurIntention" ,'blue')` and stores the result as the `r colFmt("clean_df_final_z" ,'blue')` data frame. The `r colFmt("_z" ,'blue')` suffix is a reminder that the values were z-score transformed.
+
+I will take a look at the summary statistics to confirm that the transformation was applied correctly:
+```{r}
+summary(clean_df_final_z$Relativism)
+```
+
+"The mean of a z-score standardized variable should always be zero, and the range should be fairly compact. A z-score greater than 3 or less than -3 indicates an extremely rare value" [@Lantz2015]. With this in mind, the transformation seems to have worked.
+
+As I did it before, I will divide the data into training and test sets, classify the test instances using the `r colFmt("train()" ,'blue')` function, and evaluate the model [@Lantz2015].
+
+--------- Stratified sample ---------
+```{r}
+# Data URF
+df_URF_z <- clean_df_final_z %>%
+  dplyr::filter(Typerulebreaking == 'URF')
+dim(df_URF_z)
+
+# Stratified sample URF
+data_stratified_sample_URF_z <- stratified_sample_TT(df_URF_z, class, size, seed)
+data_train_v1_URF_z <- data_stratified_sample_URF_z$data_train
+data_test_v1_URF_z <- data_stratified_sample_URF_z$data_test
+
+dim(data_train_v1_URF_z)
+dim(data_test_v1_URF_z)
+
+# SplitEntrepreneurIntention is equally divided in each set
+prop.table(table(data_train_v1_URF_z$SplitEntrepreneurIntention))
+prop.table(table(data_test_v1_URF_z$SplitEntrepreneurIntention))
+
+# Data CRB
+df_CRB_z <- clean_df_final_z %>%
+  dplyr::filter(Typerulebreaking == 'CRB')
+dim(df_CRB_z)
+
+# Stratified sample CRB
+data_stratified_sample_CRB_z <- stratified_sample_TT(df_CRB_z, class, size, seed)
+data_train_v1_CRB_z <- data_stratified_sample_CRB_z$data_train
+data_test_v1_CRB_z <- data_stratified_sample_CRB_z$data_test
+
+dim(data_train_v1_CRB_z)
+dim(data_test_v1_CRB_z)
+
+# SplitEntrepreneurIntention is equally divided in each set
+prop.table(table(data_train_v1_CRB_z$SplitEntrepreneurIntention))
+prop.table(table(data_test_v1_CRB_z$SplitEntrepreneurIntention))
+```
+
+--------- Train Model ---------
+```{r}
+# Code obtained from https://www.guru99.com/r-random-forest-tutorial.html#6
+# Get Model 2
+model2_v1_URF <- get_model1_knn_TT('2.1 - URF', seed, data_train_v1_URF_z, trControl)
+fit_m2_v1_URF <- model2_v1_URF$fit
+
+# Evaluation Model Measures
+accuracy_model2_v1_URF <- model2_v1_URF$accuracyTest
+kappa_model2_v1_URF <- model2_v1_URF$kappaTest
+k_model2_v1_URF <- model2_v1_URF$bestK
+```
+
+The final value used for the model was k = `r  k_model2_v1_URF` with an accuracy = `r  accuracy_model2_v1_URF`% and a kappa = `r  kappa_model2_v1_URF`.
+
+#### Model 3: Getting Best Control Parameters (with normalized data)
+```{r}
+# Get Model 3
+model3_v1_URF <- get_model2_knn_TT('3.2 - URF', seed, fit_m1_v1_URF, data_train_v1_URF, trControl)
+fit_m3_v1_URF <- model3_v1_URF$fit
+
+# Evaluation Model Measures Test Data
+accuracy_model3_v1_URF <- model3_v1_URF$accuracyTest
+kappa_model3_v1_URF <- model3_v1_URF$kappaTest
+k_model3_v1_URF <- model3_v1_URF$bestK
+```
+The final value used for the model was k = `r  k_model3_v1_URF` with an accuracy = `r  accuracy_model3_v1_URF`% and a kappa = `r  kappa_model3_v1_URF`%.
+
+#### Model 4: Getting Best Control Parameters (z-score data)
+```{r}
+# Get Model 4
+model4_v1_URF <- get_model2_knn_TT('4.2 - URF', seed, fit_m2_v1_URF, data_train_v1_URF_z, trControl)
+fit_m4_v1_URF <- model4_v1_URF$fit
+
+# Evaluation Model Measures Test Data
+accuracy_model4_v1_URF <- model4_v1_URF$accuracyTest
+kappa_model4_v1_URF <- model4_v1_URF$kappaTest
+k_model4_v1_URF <- model4_v1_URF$bestK
+```
+The final value used for the model was k = `r  k_model4_v1_URF` with an accuracy = `r  accuracy_model4_v1_URF`% and a kappa = `r  kappa_model4_v1_URF`%.
+
+### Step 11: Evaluate Best Model with Test Data
+```{r include = FALSE}
+# Get Number of Best Model
+best_accuracy <- 0
+best_model_v1_URF <- 0
+for(i in 1:4){
+  best_accuracy_modelX_v1_URF <- paste('accuracy_model', i, '_v1_URF', sep = "")
+  
+  if(as.numeric(get(best_accuracy_modelX_v1_URF)) > best_accuracy){
+    best_accuracy <- as.numeric(get(best_accuracy_modelX_v1_URF))
+    best_model_v1_URF <- i
+  }
+}
+best_fit_v1_URF <- paste('fit_m', best_model_v1_URF, '_v1_URF', sep = "")
+```
+As model `r  best_model_v1_URF` demonstrates a better performance, I will use it to evaluate the best model for this version.
+
+```{r}
+# Get Normalized or Z-Score Data
+nOrZdata <- ""
+if(best_model_v1_URF == 2 || best_model_v1_URF == 4){
+  nOrZdata <- "_z"
+}
+
+testData <- paste("data_test_v1_URF", nOrZdata, sep = "")
+
+# Evaluate Model with Test Data
+evaluateModelMeasuresTest <- evaluateModel(get(best_fit_v1_URF), get(testData), seed)
+accuracyTest_v1_URF <- evaluateModelMeasuresTest$accuracy
+kappaTest_v1_URF <- evaluateModelMeasuresTest$kappa
+sensitivityTest_v1_URF <- evaluateModelMeasuresTest$sensitivity
+specificityTest_v1_URF <- evaluateModelMeasuresTest$specificity
+```
+
+## CRB
+### Step 8: Select Sample Variables and Get K Value
+```{r}
+# Data Train CRB
+data_train_v1_CRB <- data_train_CRB %>%
+  dplyr::select(c(all_variables_v1))
+
+# Data Test CRB
+data_test_v1_CRB <- data_test_CRB %>%
+  dplyr::select(c(all_variables_v1))
+
+dim(data_train_v1_CRB)
+dim(data_test_v1_CRB)
+
+# Get Data Train Size
+data_train_v1_CRB_size <- nrow(data_train_v1_CRB)
+# Get K
+k_v1_CRB <- floor(sqrt(data_train_v1_CRB_size))
+if((k_v1_CRB %% 2) == 0){
+  k_v1_CRB <- k_v1_CRB - 1
+}
+```
+
+Use function prop.table() combined with table() to verify if the randomization process is correct.
+```{r}
+prop.table(table(data_train_v1_CRB$SplitEntrepreneurIntention))
+prop.table(table(data_test_v1_CRB$SplitEntrepreneurIntention))
+```
+In both dataset, the amount of low and high EI is the same.
+
+### Step 9: Model 1: Default Setting
+As my training data includes `r colFmt(data_train_v1_CRB_size ,'blue')` instances, I might try `r colFmt("k = " ,'blue')` `r colFmt(k_v1_CRB ,'blue')`, an odd number roughly equal to the square root of `r colFmt(data_train_v1_CRB_size ,'blue')`. "With a two-category outcome, using an odd number eliminates the chance of ending with a tie vote" [@Lantz2015].
+```{r}
+# Get Model 1
+model1_v1_CRB <- get_model1_knn_TT('1.1 - CRB', seed, data_train_v1_CRB, trControl)
+fit_m1_v1_CRB <- model1_v1_CRB$fit
+
+# Evaluation Model Measures
+accuracy_model1_v1_CRB <- model1_v1_CRB$accuracyTest
+kappa_model1_v1_CRB <- model1_v1_CRB$kappaTest
+k_model1_v1_CRB <- model1_v1_CRB$bestK
+```
+The final value used for the model was k = `r  k_model1_v1_CRB` with an accuracy = `r  accuracy_model1_v1_CRB`% and a kappa = `r  kappa_model1_v1_CRB`.
+
+### Step 10: Improve Model Performance
+@Lantz2015 proposes two simple variations to improve the model: rescaling the numeric features and try several different values for *k*.
+
+#### Model 2: Transformation (z-score standardization)
+@Lantz2015 says that "normalization is traditionally used for k-NN clasification", but "it may not always be the most appropiate way to rescale features". Z-score standardized values "have no predefined minimum and maximum, extreme values are not compressed towards the center" [@Lantz2015]. It might "be reasonable to allow the outliers to be weighted more heavily in the distance calculation" [@Lantz2015]. I will see whether z-score standardization can improve my predictive accuracy.
+
+I will use the R's built-in `r colFmt("scale()" ,'blue')` function. It rescales values using the z-score standardization and it "offers the additional benefit that it can be applied directly to a data frame, so we can avoid the use of the `r colFmt("lapply()" ,'blue')` function" [@Lantz2015]. To create a z-score standardized version of the `r colFmt("clean_df_final" ,'blue')` data, I use the following command:
+```{r}
+clean_df_final_z <- data.frame(scale(clean_df_final%>%
+  dplyr::select(-c("Typerulebreaking", "SplitEntrepreneurIntention"))),
+  clean_df_final%>%
+  dplyr::select(c("Typerulebreaking", "SplitEntrepreneurIntention")))
+
+clean_df_final_z
+```
+
+This command rescales all the features, with the exception of `r colFmt("Typerulebreaking" ,'blue')` and `r colFmt("SplitEntrepreneurIntention" ,'blue')` and stores the result as the `r colFmt("clean_df_final_z" ,'blue')` data frame. The `r colFmt("_z" ,'blue')` suffix is a reminder that the values were z-score transformed.
+
+I will take a look at the summary statistics to confirm that the transformation was applied correctly:
+```{r}
+summary(clean_df_final_z$Relativism)
+```
+
+"The mean of a z-score standardized variable should always be zero, and the range should be fairly compact. A z-score greater than 3 or less than -3 indicates an extremely rare value" [@Lantz2015]. With this in mind, the transformation seems to have worked.
+
+As I did it before, I will divide the data into training and test sets, classify the test instances using the `r colFmt("train()" ,'blue')` function, and evaluate the model [@Lantz2015].
+
+--------- Stratified sample ---------
+```{r}
+# Data CRB
+df_CRB_z <- clean_df_final_z %>%
+  dplyr::filter(Typerulebreaking == 'CRB')
+dim(df_CRB_z)
+
+# Stratified sample CRB
+data_stratified_sample_CRB_z <- stratified_sample_TT(df_CRB_z, class, size, seed)
+data_train_v1_CRB_z <- data_stratified_sample_CRB_z$data_train
+data_test_v1_CRB_z <- data_stratified_sample_CRB_z$data_test
+
+dim(data_train_v1_CRB_z)
+dim(data_test_v1_CRB_z)
+
+# SplitEntrepreneurIntention is equally divided in each set
+prop.table(table(data_train_v1_CRB_z$SplitEntrepreneurIntention))
+prop.table(table(data_test_v1_CRB_z$SplitEntrepreneurIntention))
+
+# Data CRB
+df_CRB_z <- clean_df_final_z %>%
+  dplyr::filter(Typerulebreaking == 'CRB')
+dim(df_CRB_z)
+
+# Stratified sample CRB
+data_stratified_sample_CRB_z <- stratified_sample_TT(df_CRB_z, class, size, seed)
+data_train_v1_CRB_z <- data_stratified_sample_CRB_z$data_train
+data_test_v1_CRB_z <- data_stratified_sample_CRB_z$data_test
+
+dim(data_train_v1_CRB_z)
+dim(data_test_v1_CRB_z)
+
+# SplitEntrepreneurIntention is equally divided in each set
+prop.table(table(data_train_v1_CRB_z$SplitEntrepreneurIntention))
+prop.table(table(data_test_v1_CRB_z$SplitEntrepreneurIntention))
+```
+
+--------- Train Model ---------
+```{r}
+# Get Model 2
+model2_v1_CRB <- get_model1_knn_TT('2.1 - CRB', seed, data_train_v1_CRB_z, trControl)
+fit_m2_v1_CRB <- model2_v1_CRB$fit
+
+# Evaluation Model Measures
+accuracy_model2_v1_CRB <- model2_v1_CRB$accuracyTest
+kappa_model2_v1_CRB <- model2_v1_CRB$kappaTest
+k_model2_v1_CRB <- model2_v1_CRB$bestK
+```
+
+The final value used for the model was k = `r  k_model2_v1_CRB` with an accuracy = `r  accuracy_model2_v1_CRB`% and a kappa = `r  kappa_model2_v1_CRB`.
+
+#### Model 3: Getting Best Control Parameters (with normalized data)
+```{r}
+# Get Model 3
+model3_v1_CRB <- get_model2_knn_TT('3.2 - CRB', seed, fit_m1_v1_CRB, data_train_v1_CRB, trControl)
+fit_m3_v1_CRB <- model3_v1_CRB$fit
+
+# Evaluation Model Measures Test Data
+accuracy_model3_v1_CRB <- model3_v1_CRB$accuracyTest
+kappa_model3_v1_CRB <- model3_v1_CRB$kappaTest
+k_model3_v1_CRB <- model3_v1_CRB$bestK
+```
+The final value used for the model was k = `r  k_model3_v1_CRB` with an accuracy = `r  accuracy_model3_v1_CRB`% and a kappa = `r  kappa_model3_v1_CRB`%.
+
+#### Model 4: Getting Best Control Parameters (z-score data)
+```{r}
+# Get Model 4
+model4_v1_CRB <- get_model2_knn_TT('4.2 - CRB', seed, fit_m2_v1_CRB, data_train_v1_CRB_z, trControl)
+fit_m4_v1_CRB <- model4_v1_CRB$fit
+
+# Evaluation Model Measures Test Data
+accuracy_model4_v1_CRB <- model4_v1_CRB$accuracyTest
+kappa_model4_v1_CRB <- model4_v1_CRB$kappaTest
+k_model4_v1_CRB <- model4_v1_CRB$bestK
+```
+The final value used for the model was k = `r  k_model4_v1_CRB` with an accuracy = `r  accuracy_model4_v1_CRB`% and a kappa = `r  kappa_model4_v1_CRB`%.
+
+### Step 11: Evaluate Best Model with Test Data
+```{r include = FALSE}
+# Get Number of Best Model
+best_accuracy <- 0
+best_model_v1_CRB <- 0
+for(i in 1:4){
+  best_accuracy_modelX_v1_CRB <- paste('accuracy_model', i, '_v1_CRB', sep = "")
+
+  if(as.numeric(get(best_accuracy_modelX_v1_CRB)) > best_accuracy){
+    best_accuracy <- as.numeric(get(best_accuracy_modelX_v1_CRB))
+    best_model_v1_CRB <- i
+  }
+}
+best_fit_v1_CRB <- paste('fit_m', best_model_v1_CRB, '_v1_CRB', sep = "")
+```
+As model `r  best_model_v1_CRB` demonstrates a better performance, I will use it to evaluate the best model for this version.
+
+```{r}
+# Get Normalized or Z-Score Data
+nOrZdata <- ""
+if(best_model_v1_CRB == 2 || best_model_v1_CRB == 4){
+  nOrZdata <- "_z"
+}
+
+testData <- paste("data_test_v1_CRB", nOrZdata, sep = "")
+
+# Evaluate Model with Test Data
+evaluateModelMeasuresTest <- evaluateModel(get(best_fit_v1_CRB), get(testData), seed)
+accuracyTest_v1_CRB <- evaluateModelMeasuresTest$accuracy
+kappaTest_v1_CRB <- evaluateModelMeasuresTest$kappa
+sensitivityTest_v1_CRB <- evaluateModelMeasuresTest$sensitivity
+specificityTest_v1_CRB <- evaluateModelMeasuresTest$specificity
+```
+
+## Step 12: Summary
+```{r include = FALSE}
+# Get Summary
+formula_v1 <- 'Entrepreneur Intention = Narcissism + Relativism + Openness'
+
+######## Preliminar Evaluation Model - Train Set ########
+# URF
+dataframePreliminarValues <- saveFinalSummaryTable_knn_TT_2(dataframePreliminarValues, 1, 
+                                            'URF',
+                                            accuracy_model1_v1_URF,
+                                            kappa_model1_v1_URF,
+                                            accuracy_model2_v1_URF,
+                                            kappa_model2_v1_URF,
+                                            accuracy_model3_v1_URF,
+                                            kappa_model3_v1_URF,
+                                            accuracy_model4_v1_URF,
+                                            kappa_model4_v1_URF)
+
+# CRB
+dataframePreliminarValues <- saveFinalSummaryTable_knn_TT_2(dataframePreliminarValues, 2,
+                                            'CRB',
+                                            accuracy_model1_v1_CRB,
+                                            kappa_model1_v1_CRB,
+                                            accuracy_model2_v1_CRB,
+                                            kappa_model2_v1_CRB,
+                                            accuracy_model3_v1_CRB,
+                                            kappa_model3_v1_CRB,
+                                            accuracy_model4_v1_CRB,
+                                            kappa_model4_v1_CRB)
+
+######## Final Evaluation Model - Test Set ########
+# URF
+dataframeTestValues <- saveFinalSummaryTable_knn_TT(dataframeTestValues, 1, 
+                                                    'URF',
+                                                    best_model_v1_URF,
+                                                    accuracyTest_v1_URF,
+                                                    kappaTest_v1_URF,
+                                                    sensitivityTest_v1_URF,
+                                                    specificityTest_v1_URF)
+
+# CRB
+dataframeTestValues <- saveFinalSummaryTable_knn_TT(dataframeTestValues, 2,
+                                                    'CRB',
+                                                    best_model_v1_CRB,
+                                                    accuracyTest_v1_CRB,
+                                                    kappaTest_v1_CRB,
+                                                    sensitivityTest_v1_CRB,
+                                                    specificityTest_v1_CRB)
+```
+
+### Preliminar Performance Summary
+```{r echo = FALSE, results = 'asis'}
+# Change Name of Columns
+colnames(dataframePreliminarValues) <- c("TRB", 'Accuracy', 'Kappa', 'Accuracy', 'Kappa', 'Accuracy', 'Kappa', 'Accuracy', 'Kappa')
+
+# Print Data Frame
+kable(dataframePreliminarValues, "html", caption = "Preliminar Performance Summary")%>%
+  kable_styling(bootstrap_options = c("condensed", "responsive")) %>%
+  collapse_rows(1)%>%
+  add_header_above(c(" ", "Model 1" = 2, "Model 2" = 2, "Model 3" = 2, "Model 4" = 2))
+```
+
+### Final Performance Summary
+```{r echo = FALSE, results = 'asis'}
+# Change Name of Columns
+colnames(dataframeTestValues) <- c("TRB", "Model", "Accuracy", 'Kappa', 'Sensitivity', 'Specificity')
+
+# Print Data Frame
+kable(dataframeTestValues, "html", caption = "Final Performance Summary")%>% 
+  kable_styling(bootstrap_options = c("condensed", "responsive")) %>%
+  collapse_rows(1)
+```
+
+```{r include = FALSE}
+# Save Table to Excel
+sheets <- list("FinalPerformanceSummary" = dataframeTestValues, "PreliminarPerformanceSummary" = dataframePreliminarValues)
+write_xlsx(sheets, paste("performanceSummary_Size", size, ".xlsx", sep = ""))
+```
+
+# References

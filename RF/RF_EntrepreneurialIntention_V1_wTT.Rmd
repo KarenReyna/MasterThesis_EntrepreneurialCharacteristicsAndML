@@ -1,0 +1,414 @@
+---
+title: "Random Forest predicting Entrepreneurial Intention"
+author: "Ana Karen Reyna Rivas"
+date: "2020"
+output:
+  html_notebook:
+    toc: true
+    includes:
+      after_body: ../Footer.html
+bibliography: ../Bibliography.bib
+---
+
+```{r}
+# Copyright (c) 2020, Ana Karen Reyna Rivas
+# All rights reserved.
+
+# This source code is licensed under the BSD-style license found in the LICENSE file in the root directory of this source tree.
+```
+
+```{r setup, include=FALSE}
+ knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+# Step 1: Import Libraries
+The libraries I used for the whole implementation are imported in this section. The first step was to install the libraries with the `r  colFmt('install.packages()', 'blue')` function. Then, import them with `r  colFmt('library()', 'blue')` function.
+```{r}
+library(dplyr)
+library(knitr)
+library(kableExtra) # Construct Complex Table
+library(randomForest)
+library(caret)
+library(e1071) # R ML Library
+library(writexl) # Write to Excel
+```
+
+# Step 2: Import Data and Functions
+The data gathered during the experiment and the reusable code are imported here. The `r  colFmt('load()', 'blue')` function was used to import the data and `r  colFmt('source()', 'blue')` for the code. Additionally, I cleaned the working environment to delete any other existing variables.
+```{r}
+# Clean Workspace Variables
+rm(list = ls())
+
+# Data - TODO
+load("<RDataDirectoryFile>")
+
+# Functions
+source('../FunctionsV4.R')
+source('RF_Functions_wTT.R')
+```
+
+# Step 3: Define Global Variables
+This section defines all the global variables used across the R Notebook. Variables like size of the train/test split, seed, train control, and features selected for the model are declared here. In case new settings and variables want to be explored, only this section needs to be changed.
+```{r}
+# Size and Seed
+size = 0.50
+seed = 6
+
+# Data Frame to Save Table's Values
+dataframePreliminarValues <- data.frame()
+dataframeTestValues <- data.frame()
+
+# Control K-Fold CV
+trControl <- trainControl(method = "cv", number = 10, search = "grid")
+
+######### VARIABLES FOR ALL VERSIONS #########
+# Class
+class <- c('SplitEntrepreneurIntention')
+# Variables
+variables <- c('SumNarcissisticPI', 'SumEthicsPositionsRelativismQs', 'MeanOpenness', 'Typerulebreaking')
+# All Variables
+all_variables <- c(variables, class)
+
+######### VARIABLES FOR VERSION 1 #########
+# Class
+class_v1 <- c('SplitEntrepreneurIntention')
+# Variables
+variables_v1 <- c('Narcissism', 'Relativism', 'Openness', 'Typerulebreaking')
+# All Variables
+all_variables_v1 <- c(variables_v1, class_v1)
+```
+
+# Step 4: Filter Data
+The data has three types of rule breakers: the Unconditional Rule Followers (URF), the Conditional Rule Breakers (CRB) and the Unconditional Rule Breakers (URB). For this research, only the URF and CRB will be studied.
+
+In the following lines of code, I selected the observations with a `r  colFmt('Typerulebreaking', 'blue')` different than "3", that means different than "URB" type.
+
+Typerulebreaking Factors are:
+
+* 1: URF
+* 2: CRB
+* 3: URB
+
+I also mutated to the dataframe the `r  colFmt('SplitEntrepreneurIntention', 'blue')` variable as follows:
+
+* If the `r  colFmt('MeanEntrepreneurIntention', 'blue')` value of the instance is lower than the mean of the whole dataset, then "SplitEntrepreneurIntention = 1" (meaning low \gls{ei}).
+* If the `r  colFmt('MeanEntrepreneurIntention', 'blue')` value of the instance is higher or equal than the mean of the whole dataset, then "SplitEntrepreneurIntention = 2" (meaning high \gls{ei}).
+* Else "SplitEntrepreneurIntention = 3".
+```{r}
+# Filter and Mutate EI Variable
+df_QueParadigmRuleEntIntention <- df_QueParadigm %>%
+  filter(Typerulebreaking != 3) %>%
+  filter(exp_part == 3) %>%
+  mutate(SplitEntrepreneurIntention = dplyr::if_else((MeanEntrepreneurIntention < mean(df_Que_RuleBreakers$MeanEntrepreneurIntention)), 1, dplyr::if_else((MeanEntrepreneurIntention >= mean(df_Que_RuleBreakers$MeanEntrepreneurIntention)), 2, 3)))
+# 1 = low
+# 2 = high
+
+# Print First Rows of Data Frame
+head(df_QueParadigmRuleEntIntention)
+```
+
+# Step 5: Shuffle, Clean and Create Data Samples
+It is important to shuffle the data, because then the algorithm will learn from the features of all observations [@Guru99DT] and not only for certain type of rule breaking.
+
+Data clean up to be done as follows [@Guru99DT]:
+
+* Drop variables.
+* Create factor variables for "Typerulebreaking".
+* Drop NA: in case there are some observations with NA's variables.
+
+The data samples are done using stratified sampling. Its goal is to have control over the number of "Typerulebreaking" sampled from each type [@DataCampStratifiedSample].
+
+By using stratified sample, I will now have control over how many "Typerulebreaking" from each type (URF, CRB) got sampled. I use prop.table() combined with table() to verify if the randomization process is correct [@Guru99DT].
+```{r}
+# Shuffle Data
+df_final <- shuffle_data(df_QueParadigmRuleEntIntention, seed)
+
+# Clean Data
+clean_df_final <- data.frame(clean_data(df_final, all_variables))
+
+######### URF DATA #########
+df_URF <- clean_df_final %>%
+  dplyr::filter(Typerulebreaking == 'URF')
+dim(df_URF)
+
+# Stratified Sample URF
+data_stratified_sample_URF <- stratified_sample_TT(df_URF, class, size, seed)
+data_train_URF <- data_stratified_sample_URF$data_train
+data_test_URF <- data_stratified_sample_URF$data_test
+
+dim(data_train_URF)
+dim(data_test_URF)
+
+# SplitEntrepreneurIntention is equally divided in each set
+prop.table(table(data_train_URF$SplitEntrepreneurIntention))
+prop.table(table(data_test_URF$SplitEntrepreneurIntention))
+
+######### CRB DATA #########
+df_CRB <- clean_df_final %>%
+  dplyr::filter(Typerulebreaking == 'CRB')
+dim(df_CRB)
+
+# Stratified Sample CRB
+data_stratified_sample_CRB <- stratified_sample_TT(df_CRB, class, size, seed)
+data_train_CRB <- data_stratified_sample_CRB$data_train
+data_test_CRB <- data_stratified_sample_CRB$data_test
+
+dim(data_train_CRB)
+dim(data_test_CRB)
+
+# SplitEntrepreneurIntention is equally divided in each set
+prop.table(table(data_train_CRB$SplitEntrepreneurIntention))
+prop.table(table(data_test_CRB$SplitEntrepreneurIntention))
+```
+
+# Version 1
+Formula = SplitEntrepreneurIntention = Narcissism + Relativism + Openness + Typerulebreaking
+
+## URF
+### Step 6: Select Sample Variables
+```{r}
+# Data Train URF
+data_train_v1_URF <- data_train_URF %>%
+  dplyr::select(c(all_variables_v1))
+
+# Data Test URF
+data_test_v1_URF <- data_test_URF %>%
+  dplyr::select(c(all_variables_v1))
+
+dim(data_train_v1_URF)
+dim(data_test_v1_URF)
+```
+
+Use function prop.table() combined with table() to verify if the randomization process is correct.
+```{r}
+prop.table(table(data_train_v1_URF$SplitEntrepreneurIntention))
+prop.table(table(data_test_v1_URF$SplitEntrepreneurIntention))
+```
+In both dataset, the amount of low and high EI is the same.
+
+### Step 7: Model 1: Default Setting
+Create a random forest using "Typerulebreaking" as the variable we want to predict and everything else as its predictors.
+```{r}
+# Get Model 1
+model1_v1_URF <- get_model1_rf_TT('1.1 - URF', seed, data_train_v1_URF, trControl)
+fit_m1_v1_URF <- model1_v1_URF$fit
+
+# Evaluation Model Measures
+accuracy_model1_v1_URF <- model1_v1_URF$accuracyTest
+kappa_model1_v1_URF <- model1_v1_URF$kappaTest
+mtry_model1_v1_URF <- model1_v1_URF$bestMtry
+```
+The final value used for the model was mtry = `r  mtry_model1_v1_URF` with an accuracy = `r  accuracy_model1_v1_URF`% and a kappa = `r  kappa_model1_v1_URF`.
+
+Get the importance of the variables.
+```{r}
+# Variable Importance
+print(varImp(fit_m1_v1_URF))
+```
+
+### Step 8: Model 2: Getting Best Control Parameters
+As RF has some parameters that can be modified to change the training of the model and  generalization  of  the  prediction  [@Guru99RF], I did hyperparameter tuning with: mtry, maxnodes, and ntree. Hyperparameter tuning can be very work intensive, so I let the machine to find the best parameters for me through the grid search method by passing tuneGrid = expand.grid() as argument.
+```{r}
+# Get Model 2
+model2_v1_URF <- get_model2_rf_TT('1.2 - URF', seed, fit_m1_v1_URF, data_train_v1_URF, trControl)
+fit_m2_v1_URF <- model2_v1_URF$fit
+
+# Evaluation Model Measures Test Data
+accuracy_model2_v1_URF <- model2_v1_URF$accuracyTest
+kappa_model2_v1_URF <- model2_v1_URF$kappaTest
+mtry_model2_v1_URF <- model2_v1_URF$bestMtry
+```
+The final value used for the model was mtry = `r  mtry_model2_v1_URF` with an accuracy = `r  accuracy_model2_v1_URF`% and a kappa = `r  kappa_model2_v1_URF`%.
+
+Get the importance of the variables.
+```{r}
+# Variable Importance
+print(varImp(fit_m2_v1_URF))
+```
+
+### Step 9: Evaluate Best Model with Test Data
+Make predictions with the best URF model by using the predict() function.
+```{r include = FALSE}
+# Get Number of Best Model
+best_model_v1_URF <- 0
+if(accuracy_model1_v1_URF < accuracy_model2_v1_URF) {
+  best_model_v1_URF = 2
+} else {
+  best_model_v1_URF = 1
+}
+
+best_fit_v1_URF <- paste('fit_m', best_model_v1_URF, '_v1_URF', sep = "")
+```
+The model 1 has an accuracy = `r  accuracy_model1_v1_URF`%.
+The model 2 has an accuracy = `r  accuracy_model2_v1_URF`%.
+As model `r  best_model_v1_URF` demonstrates a better performance, I will use it to evaluate the best model for this version.
+
+```{r}
+# Evaluate Model with Test Data
+evaluateModelMeasuresTest <- evaluateModel(get(best_fit_v1_URF), data_test_v1_URF, seed)
+accuracyTest_v1_URF <- evaluateModelMeasuresTest$accuracy
+kappaTest_v1_URF <- evaluateModelMeasuresTest$kappa
+sensitivityTest_v1_URF <- evaluateModelMeasuresTest$sensitivity
+specificityTest_v1_URF <- evaluateModelMeasuresTest$specificity
+```
+
+## CRB
+### Step 6: Select Sample Variables
+```{r}
+# Data Train CRB
+data_train_v1_CRB <- data_train_CRB %>%
+  dplyr::select(c(all_variables_v1))
+
+# Data Test CRB
+data_test_v1_CRB <- data_test_CRB %>%
+  dplyr::select(c(all_variables_v1))
+
+dim(data_train_v1_CRB)
+dim(data_test_v1_CRB)
+```
+
+Use function prop.table() combined with table() to verify if the randomization process is correct.
+```{r}
+prop.table(table(data_train_v1_CRB$SplitEntrepreneurIntention))
+prop.table(table(data_test_v1_CRB$SplitEntrepreneurIntention))
+```
+In both dataset, the amount of low and high EI is the same.
+
+### Step 7: Model 1: Default Setting
+Create a random forest using "Typerulebreaking" as the variable we want to predict and everything else as its predictors.
+```{r}
+# Get Model 1
+model1_v1_CRB <- get_model1_rf_TT('1.1 - CRB', seed, data_train_v1_CRB, trControl)
+fit_m1_v1_CRB <- model1_v1_CRB$fit
+
+# Evaluation Model Measures
+accuracy_model1_v1_CRB <- model1_v1_CRB$accuracyTest
+kappa_model1_v1_CRB <- model1_v1_CRB$kappaTest
+mtry_model1_v1_CRB <- model1_v1_CRB$bestMtry
+```
+The final value used for the model was mtry = `r  mtry_model1_v1_CRB` with an accuracy = `r  accuracy_model1_v1_CRB`% and a kappa = `r  kappa_model1_v1_CRB`.
+
+Get the importance of the variables.
+```{r}
+# Variable Importance
+print(varImp(fit_m1_v1_CRB))
+```
+
+### Step 8: Model 2: Getting Best Control Parameters
+As RF has some parameters that can be modified to change the training of the model and  generalization  of  the  prediction  [@Guru99RF], I did hyperparameter tuning with: mtry, maxnodes, and ntree. Hyperparameter tuning can be very work intensive, so I let the machine to find the best parameters for me through the grid search method by passing tuneGrid = expand.grid() as argument.
+```{r}
+# Get Model 2
+model2_v1_CRB <- get_model2_rf_TT('1.2 - CRB', seed, fit_m1_v1_CRB, data_train_v1_CRB, trControl)
+fit_m2_v1_CRB <- model2_v1_CRB$fit
+
+# Evaluation Model Measures Test Data
+accuracy_model2_v1_CRB <- model2_v1_CRB$accuracyTest
+kappa_model2_v1_CRB <- model2_v1_CRB$kappaTest
+mtry_model2_v1_CRB <- model2_v1_CRB$bestMtry
+```
+The final value used for the model was mtry = `r  mtry_model2_v1_CRB` with an accuracy = `r  accuracy_model2_v1_CRB`% and a kappa = `r  kappa_model2_v1_CRB`%.
+
+Get the importance of the variables.
+```{r}
+# Variable Importance
+print(varImp(fit_m2_v1_CRB))
+```
+
+### Step 9: Evaluate Best Model with Test Data
+Make predictions with the best CRB model by using the predict() function.
+```{r include = FALSE}
+# Get Number of Best Model
+best_model_v1_CRB <- 0
+if(accuracy_model1_v1_CRB < accuracy_model2_v1_CRB) {
+  best_model_v1_CRB = 2
+} else {
+  best_model_v1_CRB = 1
+}
+
+best_fit_v1_CRB <- paste('fit_m', best_model_v1_CRB, '_v1_CRB', sep = "")
+```
+The model 1 has an accuracy = `r  accuracy_model1_v1_CRB`%.
+The model 2 has an accuracy = `r  accuracy_model2_v1_CRB`%.
+As model `r  best_model_v1_CRB` demonstrates a better performance, I will use it to evaluate the best model for this version.
+
+```{r}
+# Evaluate Model with Test Data
+evaluateModelMeasuresTest <- evaluateModel(get(best_fit_v1_CRB), data_test_v1_CRB, seed)
+accuracyTest_v1_CRB <- evaluateModelMeasuresTest$accuracy
+kappaTest_v1_CRB <- evaluateModelMeasuresTest$kappa
+sensitivityTest_v1_CRB <- evaluateModelMeasuresTest$sensitivity
+specificityTest_v1_CRB <- evaluateModelMeasuresTest$specificity
+```
+
+## Step 10: Summary
+```{r include = FALSE}
+# Get Summary
+formula_v1 <- 'Entrepreneur Intention = Narcissism + Relativism + Openness'
+
+######## Preliminar Evaluation Model - Train Set ########
+# URF
+dataframePreliminarValues <- saveFinalSummaryTable_rf_TT_2(dataframePreliminarValues, 1, 
+                                            'URF',
+                                            accuracy_model1_v1_URF,
+                                            kappa_model1_v1_URF,
+                                            accuracy_model2_v1_URF,
+                                            kappa_model2_v1_URF)
+
+# CRB
+dataframePreliminarValues <- saveFinalSummaryTable_rf_TT_2(dataframePreliminarValues, 2, 
+                                            'CRB',
+                                            accuracy_model1_v1_CRB,
+                                            kappa_model1_v1_CRB,
+                                            accuracy_model2_v1_CRB,
+                                            kappa_model2_v1_CRB)
+
+######## Final Evaluation Model - Test Set ########
+# URF
+dataframeTestValues <- saveFinalSummaryTable_rf_TT(dataframeTestValues, 1, 
+                                                    'URF',
+                                                    best_model_v1_URF,
+                                                    accuracyTest_v1_URF,
+                                                    kappaTest_v1_URF,
+                                                    sensitivityTest_v1_URF,
+                                                    specificityTest_v1_URF,
+                                                    as.matrix(varImp(get(best_fit_v1_URF))$importance))
+
+# CRB
+dataframeTestValues <- saveFinalSummaryTable_rf_TT(dataframeTestValues, 2, 
+                                                    'CRB',
+                                                    best_model_v1_CRB,
+                                                    accuracyTest_v1_CRB,
+                                                    kappaTest_v1_CRB,
+                                                    sensitivityTest_v1_CRB,
+                                                    specificityTest_v1_CRB,
+                                                    as.matrix(varImp(get(best_fit_v1_CRB))$importance))
+```
+
+# Preliminar Performance Summary
+```{r echo = FALSE, results = 'asis'}
+# Change Name of Columns
+colnames(dataframePreliminarValues) <- c("TRB", "Accuracy", 'Kappa', 'Accuracy', 'Kappa')
+
+# Print Data Frame
+kable(dataframePreliminarValues, "html", caption = "Preliminar Performance Summary")%>%
+  kable_styling(bootstrap_options = c("condensed", "responsive")) %>%
+  collapse_rows(1)%>%
+  add_header_above(c(" ", "Model 1" = 2, "Model 2" = 2))
+```
+
+# Final Performance Summary
+```{r echo = FALSE, results = 'asis'}
+# Change Name of Columns
+colnames(dataframeTestValues) <- c("TRB", "Model", "Accuracy", 'Kappa', 'Sensitivity', 'Specificity', "Variable Importance")
+
+# Print Data Frame
+kable(dataframeTestValues, "html", caption = "Final Performance Summary")%>% 
+  kable_styling(bootstrap_options = c("condensed", "responsive")) %>%
+  collapse_rows(1)
+```
+
+```{r include = FALSE}
+# Save Table to Excel
+sheets <- list("FinalPerformaceSummary" = dataframeTestValues, "PreliminarPerformaceSummary" = dataframePreliminarValues)
+write_xlsx(sheets, paste("performanceSummary_Size", size, ".xlsx", sep = ""))
+```
