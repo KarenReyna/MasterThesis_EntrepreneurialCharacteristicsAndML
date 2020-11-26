@@ -96,7 +96,7 @@ get_model2_rf_TT <- function(version, seed, fit, data_train, trControl){
   
   # Find the Best mtry
   print("Find Best mtry")
-  tuneGrid <- expand.grid(.mtry = c(2:15))
+  tuneGrid <- expand.grid(.mtry = c(1:3))
   rf_mtry <- train(SplitEntrepreneurIntention ~ . - Typerulebreaking - SplitEntrepreneurIntention,
                    data = data_train,
                    method = "rf",
